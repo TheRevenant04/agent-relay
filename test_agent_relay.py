@@ -1,19 +1,19 @@
-"""Protocol tests for the SQLite starter.
+"""Protocol tests for the PostgreSQL implementation.
 
 These tests intentionally exercise storage calls from multiple threads: that
 is the closest local equivalent to several worker processes racing to claim an
-inbox.  The production guarantee comes from SQLite's BEGIN IMMEDIATE boundary,
-not from a Python lock.
+inbox.  The production guarantee comes from PostgreSQL row locks (``FOR UPDATE
+SKIP LOCKED`` on claim), not from a Python lock.
 """
 
 from __future__ import annotations
 
 import os
 
-# Default to a scratch DB so `pytest` never resets the dev server's
-# `./agent-relay.db`. Respect an explicit RELAY_DATABASE_URL/DATABASE_URL
-# (e.g. CI pointing at PostgreSQL), but otherwise isolate tests.
-os.environ.setdefault("RELAY_DATABASE_URL", "sqlite:////tmp/agent-relay-test.db")
+# Default to the scratch database the compose file provisions for tests, so
+# `pytest` never resets the dev server's database. Respect an explicit
+# RELAY_DATABASE_URL/DATABASE_URL override.
+os.environ.setdefault("RELAY_DATABASE_URL", "postgresql+psycopg://relay:relay@localhost:5432/agent_relay_test")
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
@@ -98,7 +98,7 @@ def test_protocol_idempotency_terminal_retry_and_auth_boundary():
         assert "claim_token" not in attempts["items"][0]
 
 
-def test_sqlite_atomic_claims_distribute_without_overlap():
+def test_atomic_claims_distribute_without_overlap():
     with TestClient(main.app) as client:
         _sender, sender_headers = register(client, "sender")
         recipient, _recipient_headers = register(client, "recipient")
