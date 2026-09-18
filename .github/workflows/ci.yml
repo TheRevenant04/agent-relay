@@ -44,8 +44,6 @@ jobs:
     name: Build image and deploy to kind
     needs: test
     runs-on: ubuntu-latest
-    container:
-      image: catthehacker/ubuntu:act-24.04
     steps:
       - uses: actions/checkout@v4
 
@@ -53,16 +51,29 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [ ! -x /usr/local/bin/kind ]; then
-            curl -sSLo /usr/local/bin/kind https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
-            chmod +x /usr/local/bin/kind
+          bin="$HOME/.local/bin"
+          mkdir -p "$bin"
+          if [ ! -x "$bin/kind" ]; then
+            curl -sSLo "$bin/kind" https://github.com/kubernetes-sigs/kind/releases/download/v0.33.0/kind-linux-amd64
+            chmod +x "$bin/kind"
           fi
-          if [ ! -x /usr/local/bin/kubectl ]; then
-            curl -sSLo /usr/local/bin/kubectl https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl
-            chmod +x /usr/local/bin/kubectl
+          if [ ! -x "$bin/kubectl" ]; then
+            curl -sSLo "$bin/kubectl" https://dl.k8s.io/release/v1.36.1/bin/linux/amd64/kubectl
+            chmod +x "$bin/kubectl"
           fi
-          kind version
-          kubectl version --client
+          echo "$bin" >> "$GITHUB_PATH"
+          "$bin/kind" version
+          "$bin/kubectl" version --client
+
+      - name: Create kind cluster
+        shell: bash
+        run: |
+          set -euo pipefail
+          if kind get clusters 2>/dev/null | grep -qx relay; then
+            echo "kind cluster 'relay' already exists"
+          else
+            kind create cluster --name relay --wait 120s
+          fi
 
       - name: Compute unique image tag
         id: tag
@@ -90,8 +101,11 @@ jobs:
             echo "$RELAY_KUBECONFIG" | base64 -d > "$HOME/.kube/config.src"
             src="$HOME/.kube/config.src"
           else
-            echo "::error::no kubeconfig (mount /tmp/kind-kubeconfig or set RELAY_KUBECONFIG secret)" >&2
-            exit 1
+            # On GitHub runners the kind cluster created above already wrote
+            # ~/.kube/config; act supplies /tmp/kind-kubeconfig instead.
+            kubectl version --client
+            kubectl cluster-info
+            exit 0
           fi
           cp "$src" ~/.kube/config
           # When the job container can reach the kind control plane by node
@@ -106,7 +120,9 @@ jobs:
           kubectl version --client
 
       - name: Deploy to kind
-        run: kubectl -n agent-relay set image deployment/relay relay="${{ steps.tag.outputs.image }}"
+        run: |
+          kubectl apply -k k8s
+          kubectl -n agent-relay set image deployment/relay relay="${{ steps.tag.outputs.image }}"
 
       - name: Wait for rollout
         run: kubectl -n agent-relay rollout status deployment/relay --timeout=180s
